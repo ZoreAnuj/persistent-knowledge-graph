@@ -1,0 +1,409 @@
+import { KnowledgeDB } from "./db.js";
+import { embed, embeddingText, findTopK } from "./embeddings.js";
+import type {
+  UnderstandInput,
+  GetConceptInput,
+  CreateConceptInput,
+  UpdateConceptInput,
+  LinkInput,
+  RemoveConceptInput,
+  ResolveConflictInput,
+  NodeWithContext,
+  UnderstandOutput,
+  ListRootsOutput,
+  ListConflictsOutput,
+  ConflictGroup,
+  NodeRow,
+  RelationType,
+} from "./types.js";
+import { stripMergeSuffix } from "./merge.js";
+
+export function formatError(err: unknown): { content: Array<{ type: "text"; text: string }>; isError: true } {
+  const errorMsg = err instanceof Error ? err.message : String(err);
+  return {
+    content: [{ type: "text" as const, text: `MEGAMEMORY_ERROR: ${errorMsg}` }],
+    isError: true,
+  };
+}
+
+/**
+ * Generate a slug ID from a name, optionally prefixed with parent ID.
+ * Converts underscores and spaces to hyphens, lowercases, strips non-alphanumeric.
+ */
+export function makeId(name: string, parentId?: string): string {
+  const normalized = name
+    .toLowerCase()
+    .replace(/[_\s]+/g, "-")          // underscores/spaces → hyphens
+    .replace(/[^a-z0-9-]/g, "")       // strip everything else
+    .replace(/-+/g, "-")              // collapse multiple hyphens
+    .replace(/^-|-$/g, "");           // trim leading/trailing hyphens
+  return parentId ? `${parentId}/${normalized}` : normalized;
+}
+
+/**
+ * Parse file_refs from JSON string to array.
+ */
+function parseFileRefs(raw: string | null): string[] | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build a NodeWithContext from a node row and DB lookups.
+ */
+export function buildNodeWithContext(
+  db: KnowledgeDB,
+  node: NodeRow,
+  similarity?: number
+): NodeWithContext {
+  const children = db.getChildren(node.id).map((c) => ({
+    id: c.id,
+    name: c.name,
+    kind: c.kind as NodeWithContext["kind"],
+    summary: c.summary,
+  }));
+
+  const outgoing = db.getOutgoingEdges(node.id).map((e) => ({
+    to: e.to_id,
+    to_name: e.to_name,
+    relation: e.relation as RelationType,
+    description: e.description,
+  }));
+
+  const incoming = db.getIncomingEdges(node.id).map((e) => ({
+    from: e.from_id,
+    from_name: e.from_name,
+    relation: e.relation as RelationType,
+    description: e.description,
+  }));
+
+  let parent: { id: string; name: string } | null = null;
+  if (node.parent_id) {
+    const p = db.getParent(node.parent_id);
+    if (p) {
+      parent = { id: p.id, name: p.name };
+    }
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    kind: node.kind as NodeWithContext["kind"],
+    summary: node.summary,
+    why: node.why,
+    file_refs: parseFileRefs(node.file_refs),
+    children,
+    edges: outgoing,
+    incoming_edges: incoming,
+    parent,
+    ...(similarity !== undefined ? { similarity } : {}),
+  };
+}
+
+// ---- Tool handlers ----
+
+export async function understand(
+  db: KnowledgeDB,
+  input: UnderstandInput
+): Promise<UnderstandOutput> {
+  const topK = input.top_k ?? 10;
+
+  // Embed the query
+  const queryEmbedding = await embed(input.query);
+
+  // Get all active nodes with embeddings
+  const candidates = db.getAllActiveNodesWithEmbeddings();
+
+  if (candidates.length === 0) {
+    return { matches: [] };
+  }
+
+  // Find top-K by cosine similarity
+  const topMatches = findTopK(queryEmbedding, candidates, topK);
+
+  // Build full context for each match
+  const matches: NodeWithContext[] = [];
+  for (const match of topMatches) {
+    const node = db.getNode(match.id);
+    if (!node) continue;
+    matches.push(buildNodeWithContext(db, node, match.similarity));
+  }
+
+  return { matches };
+}
+
+export function getConcept(
+  db: KnowledgeDB,
+  input: GetConceptInput
+): NodeWithContext {
+  const node = db.getNode(input.id);
+  if (!node) {
+    throw new Error(`Concept "${input.id}" not found.`);
+  }
+  return buildNodeWithContext(db, node);
+}
+
+export async function createConcept(
+  db: KnowledgeDB,
+  input: CreateConceptInput
+): Promise<{ id: string; message: string }> {
+  const id = makeId(input.name, input.parent_id);
+
+  // Check if node already exists
+  if (db.nodeExists(id)) {
+    throw new Error(`Concept "${id}" already exists. Use update_concept to modify it.`);
+  }
+
+  // Validate parent exists if specified
+  if (input.parent_id && !db.nodeExists(input.parent_id)) {
+    throw new Error(`Parent concept "${input.parent_id}" does not exist.`);
+  }
+
+  // Generate embedding
+  const text = embeddingText(input.name, input.kind, input.summary);
+  const embedding = await embed(text);
+
+  db.insertNodeAndEdges(
+    {
+      id,
+      name: input.name,
+      kind: input.kind,
+      summary: input.summary,
+      why: input.why ?? null,
+      file_refs: input.file_refs ? JSON.stringify(input.file_refs) : null,
+      parent_id: input.parent_id ?? null,
+      created_by_task: input.created_by_task ?? null,
+      embedding,
+    },
+    (input.edges ?? []).map((edge) => ({
+      to_id: edge.to,
+      relation: edge.relation,
+      description: edge.description ?? null,
+    }))
+  );
+
+  return { id, message: `Created concept "${id}"` };
+}
+
+export async function updateConcept(
+  db: KnowledgeDB,
+  input: UpdateConceptInput
+): Promise<{ message: string }> {
+  // Verify node exists
+  const existing = db.getNode(input.id);
+  if (!existing) {
+    throw new Error(`Concept "${input.id}" not found.`);
+  }
+
+  // If summary or name changed, regenerate embedding
+  let embedding: Buffer | undefined;
+  if (input.changes.summary !== undefined || input.changes.name !== undefined) {
+    const name = input.changes.name ?? existing.name;
+    const kind = input.changes.kind ?? existing.kind;
+    const summary = input.changes.summary ?? existing.summary;
+    const text = embeddingText(name, kind, summary);
+    embedding = await embed(text);
+  }
+
+  const updated = db.updateNode(input.id, {
+    ...input.changes,
+    embedding,
+  });
+
+  if (!updated) {
+    return { message: `No changes applied to "${input.id}"` };
+  }
+
+  return { message: `Updated concept "${input.id}"` };
+}
+
+export function link(
+  db: KnowledgeDB,
+  input: LinkInput
+): { message: string } {
+  // Validate both nodes exist
+  if (!db.nodeExists(input.from)) {
+    throw new Error(`Source concept "${input.from}" not found.`);
+  }
+  if (!db.nodeExists(input.to)) {
+    throw new Error(`Target concept "${input.to}" not found.`);
+  }
+
+  const { id: edgeId, inserted } = db.insertEdge({
+    from_id: input.from,
+    to_id: input.to,
+    relation: input.relation,
+    description: input.description,
+  });
+
+  if (!inserted) {
+    return {
+      message: `Relationship "${input.relation}" from "${input.from}" to "${input.to}" already exists.`,
+    };
+  }
+
+  return {
+    message: `Created ${input.relation} link from "${input.from}" to "${input.to}" (edge #${edgeId})`,
+  };
+}
+
+export function removeConcept(
+  db: KnowledgeDB,
+  input: RemoveConceptInput
+): { message: string } {
+  const existing = db.getNodeIncludingRemoved(input.id);
+  if (!existing) {
+    throw new Error(`Concept "${input.id}" not found.`);
+  }
+  if (existing.removed_at) {
+    throw new Error(`Concept "${input.id}" was already removed.`);
+  }
+
+  const removed = db.softDeleteNode(input.id, input.reason);
+  if (!removed) {
+    throw new Error(`Failed to remove concept "${input.id}".`);
+  }
+
+  return {
+    message: `Removed concept "${input.id}". Reason: ${input.reason}`,
+  };
+}
+
+export function listRoots(db: KnowledgeDB): ListRootsOutput & { hint?: string } {
+  const rootRows = db.getRootNodes();
+
+  const roots = rootRows.map((root) => {
+    const children = db.getChildren(root.id).map((c) => c.name);
+
+    return {
+      id: root.id,
+      name: root.name,
+      kind: root.kind as NodeWithContext["kind"],
+      summary: root.summary,
+      children,
+    };
+  });
+
+  const stats = db.getStats();
+  const hint =
+    stats.nodes === 0
+      ? "Graph is empty. Run /user:bootstrap-memory to populate, or create concepts as you work."
+      : undefined;
+
+  return { roots, ...(hint ? { hint } : {}) };
+}
+
+// ---- Merge conflict tools ----
+
+export function listConflicts(db: KnowledgeDB): ListConflictsOutput {
+  const conflictNodes = db.getConflictNodes();
+
+  if (conflictNodes.length === 0) {
+    return { conflicts: [] };
+  }
+
+  // Group by merge_group
+  const groups = new Map<string, NodeRow[]>();
+  for (const node of conflictNodes) {
+    const mg = node.merge_group!;
+    if (!groups.has(mg)) groups.set(mg, []);
+    groups.get(mg)!.push(node);
+  }
+
+  const conflicts: ConflictGroup[] = [];
+
+  for (const [mergeGroup, nodes] of groups) {
+    const versions = nodes.map((n) => {
+      const outgoingEdges = db.getOutgoingEdges(n.id);
+      const fileRefs = n.file_refs ? JSON.parse(n.file_refs) : null;
+
+      return {
+        id: n.id,
+        original_id: stripMergeSuffix(n.id),
+        source_branch: n.source_branch ?? "unknown",
+        name: n.name,
+        kind: n.kind as NodeWithContext["kind"],
+        summary: n.summary,
+        why: n.why,
+        file_refs: fileRefs,
+        edges: outgoingEdges.map((e) => ({
+          to: e.to_id,
+          relation: e.relation as RelationType,
+          description: e.description,
+        })),
+        removed_at: n.removed_at,
+        removed_reason: n.removed_reason,
+      };
+    });
+
+    conflicts.push({
+      merge_group: mergeGroup,
+      merge_timestamp: nodes[0].merge_timestamp,
+      versions,
+    });
+  }
+
+  return { conflicts };
+}
+
+export async function resolveConflict(
+  db: KnowledgeDB,
+  input: ResolveConflictInput
+): Promise<{ message: string }> {
+  const nodes = db.getNodesByMergeGroup(input.merge_group);
+
+  if (nodes.length === 0) {
+    throw new Error(`No nodes found with merge_group: ${input.merge_group}`);
+  }
+
+  // Prefer an active (non-removed) node as the base so the resolved concept
+  // stays active for removal conflicts. Fall back to first node.
+  const base = nodes.find((n) => n.removed_at === null) ?? nodes[0];
+  const originalId = stripMergeSuffix(base.id);
+
+  const text = embeddingText(base.name, base.kind, input.resolved.summary);
+  const newEmbedding = await embed(text);
+
+  const changes: { summary?: string; why?: string; file_refs?: string[] } = {
+    summary: input.resolved.summary,
+  };
+  if (input.resolved.why !== undefined) changes.why = input.resolved.why;
+  if (input.resolved.file_refs !== undefined) changes.file_refs = input.resolved.file_refs;
+
+  db.runInTransaction(() => {
+    // Delete all conflict copies except the base
+    for (const node of nodes) {
+      if (node.id !== base.id) {
+        db.hardDeleteNode(node.id);
+      }
+    }
+
+    // Rename the base back to the original clean ID
+    if (base.id !== originalId) {
+      const renamed = db.renameNodeId(base.id, originalId);
+      if (!renamed) {
+        throw new Error(`Failed to rename resolved node from ${base.id} to ${originalId}`);
+      }
+    }
+
+    // Apply the resolved content
+    const updated = db.updateNode(originalId, changes);
+    if (!updated) {
+      throw new Error(`Failed to apply resolved content to ${originalId}`);
+    }
+
+    db.updateNode(originalId, { embedding: newEmbedding });
+
+    // Clear merge flags on the resolved node and any associated edges
+    db.clearNodeMergeFlags(originalId);
+    db.clearEdgeMergeFlagsByGroup(input.merge_group);
+  });
+
+  return {
+    message: `Resolved "${originalId}". Reason: ${input.reason}`,
+  };
+}

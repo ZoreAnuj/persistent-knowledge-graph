@@ -1,0 +1,2133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>megamemory explorer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #222639;
+    --border: #2d3348;
+    --text: #e2e8f0;
+    --text-dim: #8892a8;
+    --text-muted: #555e75;
+    --accent: #3b82f6;
+  }
+
+  body {
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    z-index: 10;
+  }
+
+  header .logo {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text-dim);
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+  }
+
+  .search-shell {
+    flex: 1;
+    max-width: 520px;
+    position: relative;
+  }
+
+  #search {
+    width: 100%;
+    padding: 6px 12px;
+    padding-right: 30px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 13px;
+    outline: none;
+  }
+
+  #search:focus { border-color: var(--accent); }
+  #search::placeholder { color: var(--text-muted); }
+
+  #search-loading {
+    position: absolute;
+    top: 50%;
+    right: 10px;
+    width: 12px;
+    height: 12px;
+    margin-top: -6px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+    animation: spin 0.7s linear infinite;
+  }
+
+  #search-loading.visible { opacity: 1; }
+
+  #search-results {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+    max-height: 320px;
+    overflow-y: auto;
+    display: none;
+    z-index: 30;
+  }
+
+  #search-results.open { display: block; }
+
+  .search-result {
+    display: block;
+    width: 100%;
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    padding: 10px 12px;
+    text-align: left;
+    color: var(--text);
+    font-family: inherit;
+    cursor: pointer;
+  }
+
+  .search-result:last-child { border-bottom: 0; }
+  .search-result:hover,
+  .search-result.active { background: var(--surface2); }
+
+  .search-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 5px;
+  }
+
+  .search-name {
+    font-size: 12px;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .search-kind {
+    display: inline-block;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-radius: 999px;
+    padding: 2px 6px;
+    white-space: nowrap;
+  }
+
+  .search-summary {
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.4;
+    margin-bottom: 4px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .search-similarity {
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+
+  .search-empty {
+    padding: 12px;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  .search-error {
+    padding: 12px;
+    font-size: 12px;
+    color: #fca5a5;
+  }
+
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
+  .version {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  main {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+    position: relative;
+  }
+
+  #graph {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  #floating-labels {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    overflow: hidden;
+  }
+
+  .floating-label {
+    position: absolute;
+    font-family: monospace;
+    font-size: 10px;
+    pointer-events: none;
+    animation: float-up 1.8s ease-out forwards;
+  }
+
+  @keyframes float-up {
+    0% { opacity: 0.9; transform: translateY(0) translateX(-50%); }
+    100% { opacity: 0; transform: translateY(-30px) translateX(-50%); }
+  }
+
+  /* ---- Panel ---- */
+  #panel {
+    width: 380px;
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 20px;
+    display: none;
+    flex-shrink: 0;
+    margin-left: auto;
+    z-index: 5;
+  }
+
+  #panel.open { display: block; }
+
+  #panel-close {
+    float: right;
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 2px 8px;
+    border-radius: 4px;
+    margin: -4px -4px 0 0;
+  }
+
+  #panel-close:hover { background: var(--surface2); color: var(--text); }
+
+  .panel-name {
+    font-size: 16px;
+    font-weight: 700;
+    margin-bottom: 6px;
+    line-height: 1.3;
+  }
+
+  .kind-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 14px;
+  }
+
+  .panel-section { margin-bottom: 14px; }
+
+  .panel-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+  }
+
+  .panel-body {
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-dim);
+  }
+
+  .file-ref {
+    display: block;
+    padding: 1px 0;
+    color: var(--accent);
+    font-size: 12px;
+    word-break: break-all;
+  }
+
+  .link-row {
+    display: block;
+    padding: 5px 0;
+    font-size: 12px;
+    cursor: pointer;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .link-row:last-child { border-bottom: none; }
+  .link-row:hover { color: var(--text); }
+
+  .link-row .rel {
+    display: inline-block;
+    padding: 1px 5px;
+    background: var(--surface2);
+    border-radius: 3px;
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-right: 4px;
+  }
+
+  .link-row .name { color: var(--accent); }
+
+  .link-row .desc {
+    display: block;
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
+    padding-left: 2px;
+  }
+
+  .child-link {
+    display: inline-block;
+    margin: 2px 6px 2px 0;
+    padding: 2px 8px;
+    background: var(--surface2);
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    color: var(--accent);
+  }
+
+  .child-link:hover { background: var(--border); }
+
+  .meta { font-size: 11px; color: var(--text-muted); line-height: 1.6; }
+
+  /* ---- Footer ---- */
+  footer {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 6px 16px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--text-muted);
+    z-index: 10;
+  }
+
+  footer .stat { white-space: nowrap; }
+
+  footer .dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 4px;
+    vertical-align: middle;
+  }
+
+  /* ---- Empty state ---- */
+  #empty-state {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    color: var(--text-muted);
+    display: none;
+  }
+
+  #empty-state.visible { display: block; }
+  #empty-state h2 { font-size: 20px; font-weight: 600; margin-bottom: 8px; color: var(--text-dim); }
+  #empty-state p { font-size: 13px; }
+
+  /* ---- Timeline bar ---- */
+  #timeline-bar {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 16px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    z-index: 10;
+  }
+  #timeline-bar.active { display: flex; }
+
+  #timeline-toggle {
+    padding: 3px 10px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-dim);
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #timeline-toggle:hover { border-color: var(--accent); color: var(--text); }
+  #timeline-toggle.live { background: #22c55e22; color: #22c55e; border-color: #22c55e44; }
+
+  #timeline-slider {
+    flex: 1;
+    height: 4px;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+
+  #timeline-display {
+    font-size: 11px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    width: 340px;
+    flex-shrink: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  #timeline-controls { display: flex; align-items: center; gap: 6px; }
+
+  #timeline-play {
+    padding: 2px 8px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-dim);
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  #timeline-play:hover { border-color: var(--accent); color: var(--text); }
+
+  #timeline-speed {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-dim);
+    font-family: inherit;
+    font-size: 11px;
+    padding: 2px 4px;
+  }
+
+  #timeline-summary {
+    font-size: 10px;
+    color: var(--text-muted, var(--text-dim));
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    width: 300px;
+    flex-shrink: 0;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="logo">MegaMemory</span>
+  <div class="search-shell" id="search-shell">
+    <input id="search" type="text" placeholder="Search concepts semantically..." autocomplete="off" />
+    <span id="search-loading" aria-hidden="true"></span>
+    <div id="search-results"></div>
+  </div>
+  <span class="version">v{{VERSION}}</span>
+</header>
+
+<main>
+  <canvas id="graph"></canvas>
+  <div id="floating-labels"></div>
+  <div id="empty-state">
+    <h2>Graph is empty</h2>
+    <p>Run <code>/user:bootstrap-memory</code> in opencode to populate,<br/>or create concepts as you work.</p>
+  </div>
+  <aside id="panel">
+    <div id="panel-content"></div>
+  </aside>
+</main>
+
+<div id="timeline-bar">
+  <button id="timeline-toggle" class="live" title="Switch between Live and Timeline mode">● Live</button>
+  <div id="timeline-controls" style="display:none">
+    <button id="timeline-play" title="Play/Pause">▶</button>
+    <select id="timeline-speed" title="Playback speed">
+      <option value="100">Fast</option>
+      <option value="250" selected>Normal</option>
+      <option value="500">Slow</option>
+      <option value="1000">Slower</option>
+    </select>
+  </div>
+  <input id="timeline-slider" type="range" min="0" max="1" value="1" step="1" style="display:none" />
+  <span id="timeline-display"></span>
+  <span id="timeline-summary"></span>
+</div>
+
+<footer id="stats"></footer>
+
+<script>
+const KIND_COLORS = {
+  feature: '#3b82f6',
+  module: '#22c55e',
+  pattern: '#a855f7',
+  config: '#f59e0b',
+  decision: '#ef4444',
+  component: '#14b8a6',
+};
+
+let canvas = null;
+let ctx = null;
+let simulation = null;
+let width = 0;
+let height = 0;
+let dpr = 1;
+
+let panX = 0;
+let panY = 0;
+let zoom = 1;
+
+let nodes = [];
+let edges = [];
+let nodeMap = new Map();
+
+let dragNode = null;
+let isPanning = false;
+let pointerDown = false;
+let movedSinceDown = false;
+let lastPointer = { x: 0, y: 0 };
+let hoverNode = null;
+
+let cameraAnimation = null;
+let renderHandle = null;
+
+let searchResults = [];
+let activeSearchIndex = -1;
+let searchRequestId = 0;
+let evtSource = null;
+let sseConnected = false;
+let timelineMode = false;
+let timelineSteps = [];
+let timelineSource = 'none';
+let timelineFetchId = 0;
+let timelinePlayInterval = null;
+let timelinePlaying = false;
+
+// ---- API ----
+
+async function fetchGraph() { return (await fetch('/api/graph')).json(); }
+async function fetchNode(id) { return (await fetch('/api/node/' + encodeURIComponent(id))).json(); }
+async function fetchStats() { return (await fetch('/api/stats')).json(); }
+async function fetchSemanticSearch(query, topK) {
+  const params = new URLSearchParams({ q: query, top_k: String(topK) });
+  const response = await fetch('/api/search?' + params.toString());
+  const data = await response.json();
+  return { ok: response.ok, status: response.status, data };
+}
+async function fetchTimelineBounds() {
+  return (await fetch('/api/timeline/bounds')).json();
+}
+async function fetchTimelineSteps() {
+  return (await fetch('/api/timeline?limit=50000')).json();
+}
+async function fetchGraphAt(timestamp) {
+  return (await fetch('/api/graph/at?t=' + encodeURIComponent(timestamp))).json();
+}
+
+function setEmptyStateVisible(visible) {
+  const el = document.getElementById('empty-state');
+  if (!el) return;
+  el.classList.toggle('visible', Boolean(visible));
+}
+
+function connectSSE() {
+  if (typeof window.EventSource === 'undefined') return;
+  if (evtSource) evtSource.close();
+
+  evtSource = new EventSource('/api/events');
+
+  evtSource.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      handleSSE(msg);
+    } catch (err) {
+      console.error('Failed to parse SSE payload:', err);
+    }
+  };
+
+  evtSource.onopen = () => {
+    sseConnected = true;
+  };
+
+  evtSource.onerror = () => {
+    sseConnected = false;
+  };
+}
+
+function handleSSE(msg) {
+  if (timelineMode) return;
+  if (!msg || !msg.type) return;
+  switch (msg.type) {
+    case 'init':
+      handleSseInit(msg.data);
+      break;
+    case 'node_added':
+      handleNodeAdded(msg.data);
+      break;
+    case 'node_updated':
+      handleNodeUpdated(msg.data);
+      break;
+    case 'node_removed':
+      handleNodeRemoved(msg.data);
+      break;
+    case 'edge_added':
+      handleEdgeAdded(msg.data);
+      break;
+    case 'edge_removed':
+      handleEdgeRemoved(msg.data);
+      break;
+    case 'stats':
+      renderStats(msg.data);
+      break;
+    default:
+      break;
+  }
+}
+
+function edgeEndpointId(endpoint) {
+  if (!endpoint) return '';
+  return typeof endpoint === 'string' ? endpoint : endpoint.id;
+}
+
+function refreshSimulation(alphaFloor) {
+  if (!simulation) {
+    initSimulation();
+    return;
+  }
+  simulation.nodes(nodes);
+  simulation.force('link').links(edges);
+  if (typeof alphaFloor === 'number') {
+    simulation.alpha(Math.max(simulation.alpha(), alphaFloor)).restart();
+  }
+}
+
+function handleSseInit(data) {
+  if (!data || !Array.isArray(data.nodes) || !Array.isArray(data.edges)) return;
+  if (nodes.length > 0) return;
+  buildGraphData({ nodes: data.nodes, edges: data.edges });
+  initSimulation();
+
+  if (data.stats || data.kinds) {
+    renderStats({
+      ...(data.stats || { nodes: data.nodes.length, edges: data.edges.length }),
+      kinds: data.kinds || (data.stats ? data.stats.kinds : undefined),
+    });
+  }
+
+  setEmptyStateVisible(nodes.length === 0);
+}
+
+function handleNodeAdded(data) {
+  if (!data || !data.id || nodeMap.has(data.id)) return;
+
+  const now = performance.now();
+  const parent = data.parent_id ? nodeMap.get(data.parent_id) : null;
+  const angle = Math.random() * Math.PI * 2;
+  const spread = parent ? (30 + Math.random() * 35) : (50 + Math.random() * 80);
+  const radius = Math.max(7, 7 + (data.edge_count || 0) * 1.5);
+  const node = {
+    id: data.id,
+    name: data.name,
+    kind: data.kind,
+    summary: data.summary,
+    parent_id: data.parent_id || null,
+    edge_count: data.edge_count || 0,
+    x: (parent ? parent.x : width / 2) + Math.cos(angle) * spread,
+    y: (parent ? parent.y : height / 2) + Math.sin(angle) * spread,
+    vx: 0,
+    vy: 0,
+    birthTime: now,
+    opacity: 1,
+    scale: 1,
+    pulseTime: now,
+    pulseLabel: null,
+    selected: false,
+    hovered: false,
+    dimmed: false,
+    highlighted: false,
+    radius,
+    color: KIND_COLORS[data.kind] || '#888',
+    _hasChildren: false,
+  };
+
+  nodes.push(node);
+  nodeMap.set(node.id, node);
+
+  if (parent) {
+    parent._hasChildren = true;
+    const hasParentEdge = edges.some((edge) => edge.isParentEdge
+      && edgeEndpointId(edge.source) === parent.id
+      && edgeEndpointId(edge.target) === node.id);
+    if (!hasParentEdge) {
+      edges.push({
+        source: parent.id,
+        target: node.id,
+        relation: 'child',
+        description: '',
+        isParentEdge: true,
+        birthTime: now,
+        drawProgress: 0,
+        pulseTime: null,
+        dimmed: false,
+      });
+    }
+  }
+
+  refreshSimulation(0.3);
+  spawnFloatingLabel('created', node, node.color);
+  setEmptyStateVisible(false);
+}
+
+function handleNodeUpdated(data) {
+  if (!data || !data.id) return;
+  const node = nodeMap.get(data.id);
+  if (!node) return;
+
+  node.name = data.name || node.name;
+  node.kind = data.kind || node.kind;
+  node.summary = data.summary || node.summary;
+  node.color = KIND_COLORS[node.kind] || '#888';
+
+  const now = performance.now();
+  node.pulseTime = now;
+  for (const edge of edges) {
+    const sourceId = edgeEndpointId(edge.source);
+    const targetId = edgeEndpointId(edge.target);
+    if (sourceId === node.id || targetId === node.id) {
+      edge.pulseTime = now + 150;
+    }
+  }
+
+  spawnFloatingLabel('updated', node, node.color);
+}
+
+function handleNodeRemoved(data) {
+  if (!data || !data.id || !nodeMap.has(data.id)) return;
+
+  const removedId = data.id;
+  const removedNode = nodeMap.get(removedId);
+
+  nodes = nodes.filter((node) => node.id !== removedId);
+  nodeMap.delete(removedId);
+  edges = edges.filter((edge) => {
+    const sourceId = edgeEndpointId(edge.source);
+    const targetId = edgeEndpointId(edge.target);
+    return sourceId !== removedId && targetId !== removedId;
+  });
+
+  if (removedNode && removedNode.parent_id) {
+    const parent = nodeMap.get(removedNode.parent_id);
+    if (parent) {
+      parent._hasChildren = nodes.some((node) => node.parent_id === parent.id);
+    }
+  }
+
+  refreshSimulation(0.3);
+  setEmptyStateVisible(nodes.length === 0);
+}
+
+function handleEdgeAdded(data) {
+  if (!data || !data.from || !data.to || !nodeMap.has(data.from) || !nodeMap.has(data.to)) return;
+
+  const exists = edges.some((edge) => !edge.isParentEdge
+    && edgeEndpointId(edge.source) === data.from
+    && edgeEndpointId(edge.target) === data.to
+    && edge.relation === data.relation);
+  if (exists) return;
+
+  const now = performance.now();
+  const edge = {
+    source: data.from,
+    target: data.to,
+    relation: data.relation,
+    description: data.description || '',
+    isParentEdge: false,
+    birthTime: now,
+    drawProgress: 0,
+    pulseTime: now,
+    dimmed: false,
+  };
+
+  edges.push(edge);
+  refreshSimulation(0.3);
+
+  const source = nodeMap.get(data.from);
+  const target = nodeMap.get(data.to);
+  if (source) source.pulseTime = now;
+  if (target) target.pulseTime = now;
+  if (source) spawnFloatingLabel('linked', source, source.color);
+}
+
+function handleEdgeRemoved(data) {
+  if (!data || !data.from || !data.to) return;
+
+  const before = edges.length;
+  edges = edges.filter((edge) => {
+    if (edge.isParentEdge) return true;
+    return !(
+      edgeEndpointId(edge.source) === data.from
+      && edgeEndpointId(edge.target) === data.to
+      && edge.relation === data.relation
+    );
+  });
+
+  if (edges.length !== before) {
+    refreshSimulation();
+  }
+}
+
+// ---- Stats footer ----
+
+function renderStats(stats) {
+  const el = document.getElementById('stats');
+  const parts = [
+    `<span class="stat">nodes: ${stats.nodes}</span>`,
+    `<span class="stat">edges: ${stats.edges}</span>`,
+  ];
+  if (stats.kinds) {
+    for (const [kind, count] of Object.entries(stats.kinds)) {
+      const c = KIND_COLORS[kind] || '#888';
+      parts.push(`<span class="stat"><span class="dot" style="background:${c}"></span>${kind}: ${count}</span>`);
+    }
+  }
+  el.innerHTML = parts.join('');
+}
+
+// ---- Data model + simulation ----
+
+function buildGraphData(data) {
+  const now = performance.now();
+  const parentIds = new Set(data.nodes.filter(n => n.parent_id).map(n => n.parent_id));
+
+  nodes = data.nodes.map((n, i) => {
+    const radius = Math.max(7, 7 + (n.edge_count || 0) * 1.5);
+    return {
+      id: n.id,
+      name: n.name,
+      kind: n.kind,
+      summary: n.summary,
+      parent_id: n.parent_id,
+      edge_count: n.edge_count || 0,
+      x: width / 2 + (Math.random() - 0.5) * 120,
+      y: height / 2 + (Math.random() - 0.5) * 120,
+      vx: 0,
+      vy: 0,
+      birthTime: now + i * 50,
+      opacity: 1,
+      scale: 1,
+      pulseTime: null,
+      pulseLabel: null,
+      selected: false,
+      hovered: false,
+      dimmed: false,
+      highlighted: false,
+      radius,
+      color: KIND_COLORS[n.kind] || '#888',
+      _hasChildren: parentIds.has(n.id),
+    };
+  });
+
+  const explicitEdges = data.edges.map((e, i) => ({
+    source: e.from,
+    target: e.to,
+    relation: e.relation,
+    description: e.description || '',
+    isParentEdge: false,
+    birthTime: now + i * 25,
+    drawProgress: 1,
+    pulseTime: null,
+    dimmed: false,
+  }));
+
+  const parentEdges = [];
+  for (let i = 0; i < data.nodes.length; i += 1) {
+    const node = data.nodes[i];
+    if (!node.parent_id || !data.nodes.some(p => p.id === node.parent_id)) continue;
+    parentEdges.push({
+      source: node.parent_id,
+      target: node.id,
+      relation: 'child',
+      description: '',
+      isParentEdge: true,
+      birthTime: now + explicitEdges.length * 25 + i * 20,
+      drawProgress: 1,
+      pulseTime: null,
+      dimmed: false,
+    });
+  }
+
+  edges = explicitEdges.concat(parentEdges);
+  nodeMap = new Map(nodes.map(n => [n.id, n]));
+}
+
+function initSimulation() {
+  simulation = d3.forceSimulation([])
+    .force('charge', d3.forceManyBody().strength(d => d._hasChildren ? -500 : -300).distanceMin(20).distanceMax(800))
+    .force('center', d3.forceCenter(width / 2, height / 2).strength(0.02))
+    .force('collision', d3.forceCollide().radius(d => d.radius + 35).strength(0.7).iterations(3))
+    .force('link', d3.forceLink([]).id(d => d.id).distance(d => d.isParentEdge ? 120 : 260).strength(d => d.isParentEdge ? 0.35 : 0.12))
+    .alphaDecay(0.015)
+    .velocityDecay(0.35)
+    .on('tick', () => {});
+
+  simulation.nodes(nodes);
+  simulation.force('link').links(edges);
+  simulation.alpha(1).restart();
+}
+
+function setupCanvas() {
+  canvas = document.getElementById('graph');
+  const container = canvas.parentElement;
+  dpr = window.devicePixelRatio || 1;
+  const rect = container.getBoundingClientRect();
+  width = rect.width;
+  height = rect.height;
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  canvas.style.width = width + 'px';
+  canvas.style.height = height + 'px';
+  ctx = canvas.getContext('2d');
+  return ctx;
+}
+
+function worldToScreen(x, y) {
+  return {
+    x: x * zoom + panX,
+    y: y * zoom + panY,
+  };
+}
+
+function screenToWorld(x, y) {
+  return {
+    x: (x - panX) / zoom,
+    y: (y - panY) / zoom,
+  };
+}
+
+function easeOutBack(t) {
+  const c1 = 1.70158;
+  const c3 = c1 + 1;
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+}
+
+function easeInOutCubic(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+function computeEntrance(node, now) {
+  const DURATION = 450;
+  const age = now - node.birthTime;
+  if (age >= DURATION) return { opacity: 1, scale: 1 };
+  if (age <= 0) return { opacity: 0, scale: 0 };
+  const t = age / DURATION;
+  return { opacity: Math.min(1, t * 2), scale: easeOutBack(t) };
+}
+
+function computePulse(pulseTime, now) {
+  if (!pulseTime) return 0;
+  const elapsed = now - pulseTime;
+  if (elapsed < 0) return 0;
+  const RAMP = 200;
+  const DECAY = 1200;
+  if (elapsed < RAMP) return elapsed / RAMP;
+  if (elapsed < RAMP + DECAY) return 1 - (elapsed - RAMP) / DECAY;
+  return 0;
+}
+
+function truncateLabel(text, max) {
+  if (!text) return '';
+  return text.length > max ? text.slice(0, max - 1) + '…' : text;
+}
+
+function edgeNodes(edge) {
+  const source = typeof edge.source === 'string' ? nodeMap.get(edge.source) : edge.source;
+  const target = typeof edge.target === 'string' ? nodeMap.get(edge.target) : edge.target;
+  return { source, target };
+}
+
+function drawGrid(now) {
+  ctx.fillStyle = '#0a0a0f';
+  ctx.fillRect(0, 0, width, height);
+
+  const minor = 20 * zoom;
+  const major = 100 * zoom;
+
+  if (minor >= 6) {
+    const ox = ((panX % minor) + minor) % minor;
+    const oy = ((panY % minor) + minor) % minor;
+    const dotSize = Math.max(0.5, Math.min(3, zoom));
+    ctx.fillStyle = '#1e2230';
+    for (let x = ox; x <= width; x += minor) {
+      for (let y = oy; y <= height; y += minor) {
+        if (dotSize > 1.5) {
+          ctx.beginPath();
+          ctx.arc(x, y, dotSize / 2, 0, Math.PI * 2);
+          ctx.fill();
+        } else {
+          ctx.fillRect(Math.floor(x) - dotSize / 2, Math.floor(y) - dotSize / 2, dotSize, dotSize);
+        }
+      }
+    }
+  }
+
+  const mx = ((panX % major) + major) % major;
+  const my = ((panY % major) + major) % major;
+  ctx.strokeStyle = '#181c28';
+  ctx.lineWidth = Math.max(0.5, Math.min(2, zoom));
+  ctx.beginPath();
+  for (let x = mx; x <= width; x += major) {
+    ctx.moveTo(Math.floor(x) + 0.5, 0);
+    ctx.lineTo(Math.floor(x) + 0.5, height);
+  }
+  for (let y = my; y <= height; y += major) {
+    ctx.moveTo(0, Math.floor(y) + 0.5);
+    ctx.lineTo(width, Math.floor(y) + 0.5);
+  }
+  ctx.stroke();
+}
+
+function drawEdges(now) {
+  for (const edge of edges) {
+    const pair = edgeNodes(edge);
+    const source = pair.source;
+    const target = pair.target;
+    if (!source || !target) continue;
+
+    const sx = source.x;
+    const sy = source.y;
+    const tx = target.x;
+    const ty = target.y;
+
+    const dx = tx - sx;
+    const dy = ty - sy;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len;
+    const ny = dx / len;
+    const curve = edge.isParentEdge ? 10 : 18;
+    const cx = (sx + tx) * 0.5 + nx * curve;
+    const cy = (sy + ty) * 0.5 + ny * curve;
+
+    const dimAlpha = edge.dimmed ? 0.08 : 0.45;
+    const age = now - edge.birthTime;
+    const progress = Math.max(0, Math.min(1, age / 350));
+    const pulse = computePulse(edge.pulseTime, now);
+    edge.drawProgress = progress;
+    const alpha = Math.min(1, dimAlpha * (0.25 + progress * 0.75) + pulse * 0.35);
+    const lineColor = edge.isParentEdge
+      ? '#2a2e42'
+      : (pulse > 0 ? source.color : '#3d4460');
+    const lineWidth = edge.isParentEdge ? 1 : (1.5 + pulse);
+
+    const p01x = sx + (cx - sx) * progress;
+    const p01y = sy + (cy - sy) * progress;
+    const p12x = cx + (tx - cx) * progress;
+    const p12y = cy + (ty - cy) * progress;
+    const ex = p01x + (p12x - p01x) * progress;
+    const ey = p01y + (p12y - p01y) * progress;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = lineColor;
+    ctx.lineWidth = lineWidth;
+    ctx.setLineDash(edge.isParentEdge ? [4, 4] : []);
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    if (progress < 1) {
+      ctx.quadraticCurveTo(p01x, p01y, ex, ey);
+    } else {
+      ctx.quadraticCurveTo(cx, cy, tx, ty);
+    }
+    ctx.stroke();
+    ctx.restore();
+
+    if (!edge.isParentEdge && progress > 0.92) {
+      const t = Math.max(0.15, Math.min(0.95, progress * 0.95));
+      const qx = (1 - t) * (1 - t) * sx + 2 * (1 - t) * t * cx + t * t * tx;
+      const qy = (1 - t) * (1 - t) * sy + 2 * (1 - t) * t * cy + t * t * ty;
+      const ddx = 2 * (1 - t) * (cx - sx) + 2 * t * (tx - cx);
+      const ddy = 2 * (1 - t) * (cy - sy) + 2 * t * (ty - cy);
+      const dlen = Math.hypot(ddx, ddy) || 1;
+      const ux = ddx / dlen;
+      const uy = ddy / dlen;
+      const size = 5;
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = lineColor;
+      ctx.beginPath();
+      ctx.moveTo(qx + ux * size, qy + uy * size);
+      ctx.lineTo(qx - ux * size - uy * size * 0.7, qy - uy * size + ux * size * 0.7);
+      ctx.lineTo(qx - ux * size + uy * size * 0.7, qy - uy * size - ux * size * 0.7);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    if (!edge.isParentEdge && edge.relation && progress > 0.65 && zoom > 1.5) {
+      const screenDistance = len * zoom;
+      if (screenDistance <= 120) continue;
+      const t = 0.5;
+      const qx = (1 - t) * (1 - t) * sx + 2 * (1 - t) * t * cx + t * t * tx;
+      const qy = (1 - t) * (1 - t) * sy + 2 * (1 - t) * t * cy + t * t * ty;
+      const labelY = qy - 8;
+      ctx.save();
+      ctx.globalAlpha = edge.dimmed ? 0.2 : (0.7 + pulse * 0.2);
+      ctx.font = '8px "SF Mono", "Cascadia Code", "Fira Code", monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const textWidth = ctx.measureText(edge.relation).width;
+      const padX = 5;
+      const padY = 2;
+      const rectW = textWidth + padX * 2;
+      const rectH = 10 + padY * 2;
+      ctx.fillStyle = 'rgba(10,10,15,0.8)';
+      ctx.fillRect(qx - rectW / 2, labelY - rectH / 2, rectW, rectH);
+      ctx.fillStyle = pulse > 0 ? source.color : '#555e75';
+      ctx.fillText(edge.relation, qx, labelY);
+      ctx.restore();
+    }
+  }
+}
+
+function drawNodeGlows(now) {
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (const node of nodes) {
+    const entrance = computeEntrance(node, now);
+    node.opacity = entrance.opacity;
+    node.scale = entrance.scale;
+
+    const pulse = computePulse(node.pulseTime, now);
+    const alphaBase = node.dimmed ? 0.06 : (node.highlighted ? 0.45 : 0.2);
+    const alpha = Math.min(1, alphaBase + pulse * 0.35);
+    const r = node.radius * (node.highlighted ? 2.9 : 2.3) * node.scale + pulse * 15;
+    const g = ctx.createRadialGradient(node.x, node.y, 0, node.x, node.y, r);
+    g.addColorStop(0, hexToRgba(node.color, alpha));
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (pulse > 0) {
+      ctx.strokeStyle = hexToRgba(node.color, (node.dimmed ? 0.2 : 0.55) * pulse);
+      ctx.lineWidth = 1.3 + pulse * 1.2;
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, node.radius * (1.3 + pulse * 0.8), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+function drawNodes(now) {
+  for (const node of nodes) {
+    const entrance = computeEntrance(node, now);
+    const radius = node.radius * entrance.scale;
+    if (radius <= 0) continue;
+
+    const baseAlpha = node.dimmed ? 0.12 : 1;
+    ctx.save();
+    ctx.globalAlpha = baseAlpha * entrance.opacity;
+    ctx.fillStyle = node.color;
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (node._hasChildren) {
+      ctx.strokeStyle = hexToRgba(node.color, node.dimmed ? 0.3 : 0.5);
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, radius + 3, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    if (node.selected || node.highlighted) {
+      ctx.strokeStyle = node.selected ? '#ffffff' : '#f59e0b';
+      ctx.lineWidth = node.selected ? 2 : 3;
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, radius + 2, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (node.hovered) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, radius + 1.5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+function drawLabels() {
+  ctx.save();
+  const labelFontSize = nodes.length > 60 ? 8 : 9;
+  ctx.font = `${labelFontSize}px "SF Mono", "Cascadia Code", "Fira Code", monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = 2;
+  for (const node of nodes) {
+    const alpha = node.dimmed ? 0.12 : 0.9;
+    if (node.dimmed || alpha <= 0.15) continue;
+    const label = truncateLabel(node.name, 20);
+    const labelX = node.x;
+    const labelY = node.y + node.radius + 8;
+    ctx.strokeStyle = 'rgba(10,10,15,0.9)';
+    ctx.strokeText(label, labelX, labelY);
+    ctx.fillStyle = `rgba(136,146,168,${alpha})`;
+    ctx.fillText(label, labelX, labelY);
+  }
+  ctx.restore();
+}
+
+function draw(now) {
+  if (!ctx) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawGrid(now);
+
+  ctx.save();
+  ctx.translate(panX, panY);
+  ctx.scale(zoom, zoom);
+  drawEdges(now);
+  drawNodeGlows(now);
+  drawNodes(now);
+  drawLabels();
+  ctx.restore();
+}
+
+function renderLoop(now) {
+  if (cameraAnimation) {
+    const elapsed = now - cameraAnimation.start;
+    const t = Math.max(0, Math.min(1, elapsed / cameraAnimation.duration));
+    const eased = easeInOutCubic(t);
+    zoom = cameraAnimation.fromZoom + (cameraAnimation.toZoom - cameraAnimation.fromZoom) * eased;
+    panX = cameraAnimation.fromPanX + (cameraAnimation.toPanX - cameraAnimation.fromPanX) * eased;
+    panY = cameraAnimation.fromPanY + (cameraAnimation.toPanY - cameraAnimation.fromPanY) * eased;
+    if (t >= 1) cameraAnimation = null;
+  }
+
+  draw(now);
+  renderHandle = requestAnimationFrame(renderLoop);
+}
+
+function animateTo(targetX, targetY, targetZoom, duration) {
+  const clampedZoom = Math.max(0.15, Math.min(5, targetZoom));
+  cameraAnimation = {
+    start: performance.now(),
+    duration,
+    fromZoom: zoom,
+    fromPanX: panX,
+    fromPanY: panY,
+    toZoom: clampedZoom,
+    toPanX: width / 2 - targetX * clampedZoom,
+    toPanY: height / 2 - targetY * clampedZoom,
+  };
+}
+
+function hitTestNode(screenX, screenY, padding) {
+  if (!nodes.length) return null;
+  const world = screenToWorld(screenX, screenY);
+  const worldPad = (padding || 0) / zoom;
+  for (let i = nodes.length - 1; i >= 0; i -= 1) {
+    const n = nodes[i];
+    const r = n.radius + worldPad;
+    const dx = world.x - n.x;
+    const dy = world.y - n.y;
+    if ((dx * dx + dy * dy) <= r * r) return n;
+  }
+  return null;
+}
+
+function setSelectedNode(node) {
+  for (const n of nodes) n.selected = false;
+  if (node) node.selected = true;
+}
+
+function spawnFloatingLabel(text, node, color) {
+  const layer = document.getElementById('floating-labels');
+  if (!layer || !node) return;
+  const pt = worldToScreen(node.x, node.y - node.radius - 8);
+  const el = document.createElement('div');
+  el.className = 'floating-label';
+  el.textContent = text;
+  el.style.left = `${pt.x}px`;
+  el.style.top = `${pt.y}px`;
+  el.style.color = color || '#e2e8f0';
+  layer.appendChild(el);
+  setTimeout(() => {
+    if (el.parentNode) el.parentNode.removeChild(el);
+  }, 1900);
+}
+
+function setupCanvasInteraction() {
+  const getPoint = (event) => {
+    const rect = canvas.getBoundingClientRect();
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  };
+
+  canvas.addEventListener('mousedown', (event) => {
+    if (event.button !== 0) return;
+    const point = getPoint(event);
+    pointerDown = true;
+    movedSinceDown = false;
+    lastPointer = point;
+
+    const hit = hitTestNode(point.x, point.y, 8);
+    if (hit) {
+      dragNode = hit;
+      const world = screenToWorld(point.x, point.y);
+      hit.fx = world.x;
+      hit.fy = world.y;
+      simulation.alphaTarget(0.25).restart();
+      isPanning = false;
+      return;
+    }
+
+    dragNode = null;
+    isPanning = true;
+  });
+
+  window.addEventListener('mousemove', (event) => {
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) {
+      for (const n of nodes) n.hovered = false;
+      canvas.style.cursor = 'default';
+      return;
+    }
+
+    const point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    const hit = hitTestNode(point.x, point.y, 8);
+
+    if (!pointerDown) {
+      hoverNode = hit;
+      for (const n of nodes) n.hovered = (hit && n.id === hit.id);
+      canvas.style.cursor = hit ? 'pointer' : 'default';
+      return;
+    }
+
+    const dx = point.x - lastPointer.x;
+    const dy = point.y - lastPointer.y;
+    if (Math.abs(dx) > 1 || Math.abs(dy) > 1) movedSinceDown = true;
+    lastPointer = point;
+
+    if (dragNode) {
+      const world = screenToWorld(point.x, point.y);
+      dragNode.fx = world.x;
+      dragNode.fy = world.y;
+      return;
+    }
+
+    if (isPanning) {
+      panX += dx;
+      panY += dy;
+    }
+  });
+
+  window.addEventListener('mouseup', async (event) => {
+    if (!pointerDown) return;
+    pointerDown = false;
+
+    if (dragNode) {
+      const clickedNode = !movedSinceDown ? dragNode : null;
+      dragNode.fx = null;
+      dragNode.fy = null;
+      simulation.alphaTarget(0);
+      dragNode = null;
+
+      if (clickedNode) {
+        setSelectedNode(clickedNode);
+        try {
+          const detail = await fetchNode(clickedNode.id);
+          if (!detail.error) {
+            showPanel(detail);
+            spawnFloatingLabel(clickedNode.kind, clickedNode, clickedNode.color);
+          }
+        } catch (err) {
+          console.error('Failed to fetch node:', clickedNode.id, err);
+        }
+      }
+      return;
+    }
+
+    if (isPanning && !movedSinceDown) {
+      setSelectedNode(null);
+      closePanel();
+    }
+    isPanning = false;
+  });
+
+  canvas.addEventListener('wheel', (event) => {
+    event.preventDefault();
+    const point = getPoint(event);
+    const world = screenToWorld(point.x, point.y);
+
+    const factor = Math.exp(-event.deltaY * 0.0012);
+    const nextZoom = Math.max(0.15, Math.min(5, zoom * factor));
+
+    zoom = nextZoom;
+    panX = point.x - world.x * zoom;
+    panY = point.y - world.y * zoom;
+  }, { passive: false });
+}
+
+// ---- Detail panel ----
+
+function showPanel(d) {
+  const panel = document.getElementById('panel');
+  const content = document.getElementById('panel-content');
+  const color = KIND_COLORS[d.kind] || '#888';
+
+  let h = '';
+
+  // Header
+  h += `<button id="panel-close" onclick="closePanel()">&times;</button>`;
+  h += `<div class="panel-name">${esc(d.name)}</div>`;
+  h += `<span class="kind-badge" style="background:${color}22;color:${color};border:1px solid ${color}44">${d.kind}</span>`;
+
+  // Parent breadcrumb
+  if (d.parent) {
+    h += `<div style="margin-bottom:12px">`;
+    h += `<span class="link-row" style="border:0;padding:0" onclick="navigateTo('${esc(d.parent.id)}')">`;
+    h += `<span class="rel">parent</span> <span class="name">${esc(d.parent.name)}</span>`;
+    h += `</span></div>`;
+  }
+
+  // Summary
+  h += `<div class="panel-section"><div class="panel-label">Summary</div>`;
+  h += `<div class="panel-body">${esc(d.summary)}</div></div>`;
+
+  // Why
+  if (d.why) {
+    h += `<div class="panel-section"><div class="panel-label">Why</div>`;
+    h += `<div class="panel-body">${esc(d.why)}</div></div>`;
+  }
+
+  // Files
+  if (d.file_refs && d.file_refs.length) {
+    h += `<div class="panel-section"><div class="panel-label">Files</div><div class="panel-body">`;
+    h += d.file_refs.map(f => `<span class="file-ref">${esc(f)}</span>`).join('');
+    h += `</div></div>`;
+  }
+
+  // Children
+  if (d.children && d.children.length) {
+    h += `<div class="panel-section"><div class="panel-label">Children</div><div class="panel-body">`;
+    h += d.children.map(c =>
+      `<span class="child-link" onclick="navigateTo('${esc(c.id)}')">${esc(c.name)}</span>`
+    ).join('');
+    h += `</div></div>`;
+  }
+
+  // Outgoing edges
+  if (d.edges && d.edges.length) {
+    h += `<div class="panel-section"><div class="panel-label">Outgoing</div><div class="panel-body">`;
+    h += d.edges.map(e =>
+      `<span class="link-row" onclick="navigateTo('${esc(e.to)}')">` +
+      `<span class="rel">${e.relation}</span> <span class="name">${esc(e.to_name)}</span>` +
+      (e.description ? `<span class="desc">${esc(e.description)}</span>` : '') +
+      `</span>`
+    ).join('');
+    h += `</div></div>`;
+  }
+
+  // Incoming edges
+  if (d.incoming_edges && d.incoming_edges.length) {
+    h += `<div class="panel-section"><div class="panel-label">Incoming</div><div class="panel-body">`;
+    h += d.incoming_edges.map(e =>
+      `<span class="link-row" onclick="navigateTo('${esc(e.from)}')">` +
+      `<span class="rel">${e.relation}</span> <span class="name">${esc(e.from_name)}</span>` +
+      (e.description ? `<span class="desc">${esc(e.description)}</span>` : '') +
+      `</span>`
+    ).join('');
+    h += `</div></div>`;
+  }
+
+  // Metadata
+  if (d.created_at || d.created_by_task) {
+    h += `<div class="panel-section"><div class="panel-label">Metadata</div><div class="meta">`;
+    if (d.created_by_task) h += `task: ${esc(d.created_by_task)}<br/>`;
+    if (d.created_at) h += `created: ${d.created_at}<br/>`;
+    if (d.updated_at) h += `updated: ${d.updated_at}`;
+    h += `</div></div>`;
+  }
+
+  content.innerHTML = h;
+  panel.classList.add('open');
+}
+
+function closePanel() {
+  document.getElementById('panel').classList.remove('open');
+  for (const n of nodes) n.selected = false;
+}
+
+function navigateTo(id) {
+  const node = nodes.find(n => n.id === id);
+  if (!node) return;
+  for (const n of nodes) n.selected = false;
+  node.selected = true;
+  animateTo(node.x, node.y, 2.5, 300);
+  fetchNode(id).then(d => {
+    if (!d.error) {
+      showPanel(d);
+      spawnFloatingLabel(node.kind, node, node.color);
+    }
+  });
+}
+
+// ---- Search ----
+
+function setSearchLoading(loading) {
+  const spinner = document.getElementById('search-loading');
+  spinner.classList.toggle('visible', Boolean(loading));
+}
+
+function clearSearchHighlight() {
+  for (const n of nodes) {
+    n.dimmed = false;
+    n.highlighted = false;
+  }
+  for (const e of edges) {
+    e.dimmed = false;
+  }
+}
+
+function highlightSearchMatches(matches) {
+  if (!matches.length) {
+    clearSearchHighlight();
+    return;
+  }
+
+  const ids = new Set(matches.map(m => m.id));
+  for (const n of nodes) {
+    n.highlighted = ids.has(n.id);
+    n.dimmed = !n.highlighted;
+  }
+
+  for (const e of edges) {
+    const pair = edgeNodes(e);
+    const sourceId = pair.source ? pair.source.id : null;
+    const targetId = pair.target ? pair.target.id : null;
+    const connected = (sourceId && ids.has(sourceId)) || (targetId && ids.has(targetId));
+    e.dimmed = !connected;
+  }
+}
+
+function closeSearchResults() {
+  const resultsEl = document.getElementById('search-results');
+  resultsEl.classList.remove('open');
+}
+
+function setActiveSearchResult(index) {
+  const resultsEl = document.getElementById('search-results');
+  const rows = resultsEl.querySelectorAll('.search-result');
+  rows.forEach(row => row.classList.remove('active'));
+
+  if (index < 0 || index >= rows.length) {
+    activeSearchIndex = -1;
+    return;
+  }
+
+  activeSearchIndex = index;
+  const row = rows[index];
+  row.classList.add('active');
+  row.scrollIntoView({ block: 'nearest' });
+}
+
+function renderSearchResults(query, matches, mode) {
+  const resultsEl = document.getElementById('search-results');
+
+  if (!query) {
+    resultsEl.innerHTML = '';
+    resultsEl.classList.remove('open');
+    return;
+  }
+
+  if (!matches.length) {
+    resultsEl.innerHTML = `<div class="search-empty">No semantic matches found.</div>`;
+    resultsEl.classList.add('open');
+    activeSearchIndex = -1;
+    return;
+  }
+
+  const rows = matches.map((m, i) => {
+    const color = KIND_COLORS[m.kind] || '#888';
+    const hasScore = Number.isFinite(m.similarity);
+    const score = hasScore ? Math.max(0, Math.min(1, m.similarity)) : 0;
+    const scorePct = (score * 100).toFixed(1);
+    const metric = hasScore
+      ? `similarity: ${scorePct}%`
+      : (mode === 'keyword-fallback' ? 'keyword fallback' : '');
+    return `
+      <button class="search-result" type="button" data-index="${i}" data-id="${esc(m.id)}">
+        <div class="search-row">
+          <span class="search-name">${esc(m.name)}</span>
+          <span class="search-kind" style="background:${color}22;color:${color};border:1px solid ${color}44">${esc(m.kind)}</span>
+        </div>
+        <div class="search-summary">${esc(m.summary || '')}</div>
+        ${metric ? `<div class="search-similarity">${metric}</div>` : ''}
+      </button>
+    `;
+  });
+
+  resultsEl.innerHTML = rows.join('');
+  resultsEl.classList.add('open');
+  setActiveSearchResult(0);
+}
+
+function localFallbackMatches(query, limit) {
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return [];
+
+  const matches = [];
+  nodes.forEach(node => {
+    const haystack = [
+      node.name || '',
+      node.summary || '',
+      node.kind || '',
+    ].join(' ').toLowerCase();
+
+    if (!terms.every(term => haystack.includes(term))) return;
+
+    matches.push({
+      id: node.id,
+      name: node.name || node.id,
+      kind: node.kind || 'feature',
+      summary: node.summary || '',
+    });
+  });
+
+  return matches.slice(0, limit);
+}
+
+function renderSearchError(query, message) {
+  const resultsEl = document.getElementById('search-results');
+  if (!query) {
+    resultsEl.innerHTML = '';
+    resultsEl.classList.remove('open');
+    return;
+  }
+  resultsEl.innerHTML = `<div class="search-error">${esc(message || 'Semantic search failed.')}</div>`;
+  resultsEl.classList.add('open');
+  activeSearchIndex = -1;
+}
+
+function chooseSearchResult(index) {
+  if (index < 0 || index >= searchResults.length) return;
+  const selected = searchResults[index];
+  navigateTo(selected.id);
+  closeSearchResults();
+}
+
+function setupSearch() {
+  const input = document.getElementById('search');
+  const shell = document.getElementById('search-shell');
+  const resultsEl = document.getElementById('search-results');
+  let timer = null;
+
+  async function runSearch(query) {
+    const requestId = ++searchRequestId;
+    if (!query) {
+      searchResults = [];
+      activeSearchIndex = -1;
+      setSearchLoading(false);
+      renderSearchResults('', []);
+      clearSearchHighlight();
+      return;
+    }
+
+    setSearchLoading(true);
+    try {
+      const response = await fetchSemanticSearch(query, 10);
+      if (requestId !== searchRequestId) return;
+
+      if (!response.ok || response.data.error) {
+        const fallback = localFallbackMatches(query, 10);
+        if (fallback.length > 0) {
+          searchResults = fallback;
+          renderSearchResults(query, searchResults, 'keyword-fallback');
+          highlightSearchMatches(searchResults);
+          return;
+        }
+
+        const detail = response.data && response.data.detail ? ` (${response.data.detail})` : '';
+        renderSearchError(query, `Semantic search unavailable${detail}`);
+        searchResults = [];
+        clearSearchHighlight();
+        return;
+      }
+
+      const semanticMatches = Array.isArray(response.data.matches) ? response.data.matches : [];
+      if (semanticMatches.length === 0) {
+        const fallback = localFallbackMatches(query, 10);
+        if (fallback.length > 0) {
+          searchResults = fallback;
+          renderSearchResults(query, searchResults, 'keyword-fallback');
+          highlightSearchMatches(searchResults);
+          return;
+        }
+      }
+
+      searchResults = semanticMatches;
+      renderSearchResults(query, searchResults);
+      highlightSearchMatches(searchResults);
+    } catch (err) {
+      if (requestId !== searchRequestId) return;
+      console.error('Semantic search failed:', err);
+      searchResults = [];
+      renderSearchError(query, 'Semantic search failed. Check server logs and try again.');
+      clearSearchHighlight();
+    } finally {
+      if (requestId === searchRequestId) {
+        setSearchLoading(false);
+      }
+    }
+  }
+
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    const query = input.value.trim();
+    timer = setTimeout(() => { runSearch(query); }, 300);
+  });
+
+  input.addEventListener('keydown', (event) => {
+    if (!resultsEl.classList.contains('open')) {
+      if (event.key === 'Enter') {
+        const query = input.value.trim();
+        if (query) {
+          clearTimeout(timer);
+          runSearch(query);
+        }
+      }
+      return;
+    }
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      if (!searchResults.length) return;
+      const nextIndex = activeSearchIndex < searchResults.length - 1
+        ? activeSearchIndex + 1
+        : 0;
+      setActiveSearchResult(nextIndex);
+      return;
+    }
+
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (!searchResults.length) return;
+      const nextIndex = activeSearchIndex > 0
+        ? activeSearchIndex - 1
+        : searchResults.length - 1;
+      setActiveSearchResult(nextIndex);
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      chooseSearchResult(activeSearchIndex >= 0 ? activeSearchIndex : 0);
+      return;
+    }
+
+    if (event.key === 'Escape') {
+      closeSearchResults();
+    }
+  });
+
+  input.addEventListener('focus', () => {
+    if (input.value.trim() && (searchResults.length > 0 || resultsEl.innerHTML)) {
+      resultsEl.classList.add('open');
+    }
+  });
+
+  resultsEl.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const button = target.closest('.search-result');
+    if (!button) return;
+    const index = Number.parseInt(button.dataset.index, 10);
+    if (!Number.isNaN(index)) chooseSearchResult(index);
+  });
+
+  document.addEventListener('click', (event) => {
+    if (!shell.contains(event.target)) {
+      closeSearchResults();
+    }
+  });
+}
+
+// ---- Util ----
+
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function hexToRgba(hex, alpha) {
+  const v = (hex || '').replace('#', '');
+  if (v.length !== 6) return `rgba(255,255,255,${alpha})`;
+  const r = Number.parseInt(v.slice(0, 2), 16);
+  const g = Number.parseInt(v.slice(2, 4), 16);
+  const b = Number.parseInt(v.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+// ---- Timeline ----
+
+function stopTimelinePlayback() {
+  if (timelinePlayInterval) {
+    clearInterval(timelinePlayInterval);
+    timelinePlayInterval = null;
+  }
+  timelinePlaying = false;
+  const playBtn = document.getElementById('timeline-play');
+  if (playBtn) playBtn.textContent = '▶';
+}
+
+function updateTimelineDisplay(stepIndex) {
+  const display = document.getElementById('timeline-display');
+  const summary = document.getElementById('timeline-summary');
+  if (!display || !summary) return;
+
+  if (stepIndex >= timelineSteps.length) {
+    display.textContent = '● Live';
+    summary.textContent = '';
+    return;
+  }
+
+  const step = timelineSteps[stepIndex];
+  display.textContent = `Step ${stepIndex + 1}/${timelineSteps.length} · ${step.tool} · ${step.timestamp}`;
+  summary.textContent = step.result_summary || '';
+}
+
+async function scrubToStep(stepIndex) {
+  if (!timelineMode) return;
+
+  updateTimelineDisplay(stepIndex);
+  const requestId = ++timelineFetchId;
+  const prevPositions = new Map(nodes.map(node => [node.id, { x: node.x, y: node.y, vx: node.vx || 0, vy: node.vy || 0, birthTime: node.birthTime }]));
+  const prevIds = new Set(nodes.map(node => node.id));
+  const prevEdgeBirthTimes = new Map(
+    edges.map(edge => {
+      const sid = typeof edge.source === 'object' ? edge.source.id : edge.source;
+      const tid = typeof edge.target === 'object' ? edge.target.id : edge.target;
+      return [`${sid}|${tid}|${edge.relation}`, edge.birthTime];
+    })
+  );
+
+  let data;
+  if (stepIndex >= timelineSteps.length) {
+    data = await fetchGraph();
+  } else {
+    data = await fetchGraphAt(timelineSteps[stepIndex].timestamp);
+  }
+
+  if (!timelineMode || requestId !== timelineFetchId) return;
+
+  buildGraphData(data);
+  const now = performance.now();
+  for (const node of nodes) {
+    const prev = prevPositions.get(node.id);
+    if (prev) {
+      node.x = prev.x;
+      node.y = prev.y;
+      node.vx = prev.vx;
+      node.vy = prev.vy;
+      node.birthTime = prev.birthTime;
+      node.pulseTime = null;
+    } else if (!prevIds.has(node.id)) {
+      node.birthTime = now;
+    }
+  }
+  for (const edge of edges) {
+    const sid = typeof edge.source === 'object' ? edge.source.id : edge.source;
+    const tid = typeof edge.target === 'object' ? edge.target.id : edge.target;
+    const key = `${sid}|${tid}|${edge.relation}`;
+    const prevBirth = prevEdgeBirthTimes.get(key);
+    if (prevBirth !== undefined) {
+      edge.birthTime = prevBirth;
+    } else {
+      edge.birthTime = now;
+    }
+  }
+
+  refreshSimulation(0.15);
+  setEmptyStateVisible(nodes.length === 0);
+}
+
+function startTimelinePlayback() {
+  if (!timelineMode || timelineSteps.length === 0 || timelinePlaying) return;
+
+  const slider = document.getElementById('timeline-slider');
+  const speedSelect = document.getElementById('timeline-speed');
+  const playBtn = document.getElementById('timeline-play');
+  if (!slider || !speedSelect || !playBtn) return;
+
+  const current = Number(slider.value);
+  if (current >= timelineSteps.length) return;
+
+  timelinePlaying = true;
+  playBtn.textContent = '⏸';
+
+  const speed = Number(speedSelect.value) || 250;
+  timelinePlayInterval = setInterval(() => {
+    if (!timelineMode) {
+      stopTimelinePlayback();
+      return;
+    }
+    const next = Number(slider.value) + 1;
+    slider.value = String(next);
+    void scrubToStep(next);
+    if (next >= timelineSteps.length) {
+      stopTimelinePlayback();
+    }
+  }, speed);
+}
+
+async function enterTimelineMode() {
+  if (timelineMode) return;
+  timelineMode = true;
+  stopTimelinePlayback();
+
+  const toggle = document.getElementById('timeline-toggle');
+  const controls = document.getElementById('timeline-controls');
+  const slider = document.getElementById('timeline-slider');
+  if (!toggle || !controls || !slider) {
+    timelineMode = false;
+    return;
+  }
+
+  const payload = await fetchTimelineSteps();
+  const steps = Array.isArray(payload.entries) ? payload.entries : [];
+  if (steps.length === 0) {
+    timelineMode = false;
+    alert('No timeline entries available yet.');
+    return;
+  }
+
+  timelineSteps = steps;
+  timelineSource = payload.source || 'none';
+
+  slider.min = '0';
+  slider.max = String(steps.length);
+  slider.value = String(steps.length);
+  slider.style.display = '';
+  controls.style.display = 'flex';
+
+  toggle.classList.remove('live');
+  toggle.textContent = '◷ Timeline';
+  toggle.title = `Timeline source: ${timelineSource}`;
+
+  if (evtSource) {
+    evtSource.close();
+    evtSource = null;
+    sseConnected = false;
+  }
+
+  updateTimelineDisplay(steps.length);
+}
+
+async function exitTimelineMode() {
+  if (!timelineMode) return;
+  timelineMode = false;
+  timelineFetchId += 1;
+  stopTimelinePlayback();
+
+  const toggle = document.getElementById('timeline-toggle');
+  const controls = document.getElementById('timeline-controls');
+  const slider = document.getElementById('timeline-slider');
+  const display = document.getElementById('timeline-display');
+  const summary = document.getElementById('timeline-summary');
+
+  if (controls) controls.style.display = 'none';
+  if (slider) {
+    slider.style.display = 'none';
+    slider.value = '1';
+    slider.min = '0';
+    slider.max = '1';
+  }
+  if (toggle) {
+    toggle.classList.add('live');
+    toggle.textContent = '● Live';
+    toggle.title = 'Switch between Live and Timeline mode';
+  }
+  if (display) display.textContent = '';
+  if (summary) summary.textContent = '';
+
+  timelineSteps = [];
+  timelineSource = 'none';
+
+  const prevPositions = new Map(nodes.map(node => [node.id, { x: node.x, y: node.y, vx: node.vx || 0, vy: node.vy || 0, birthTime: node.birthTime }]));
+  const prevEdgeBirthTimes = new Map(
+    edges.map(edge => {
+      const sid = typeof edge.source === 'object' ? edge.source.id : edge.source;
+      const tid = typeof edge.target === 'object' ? edge.target.id : edge.target;
+      return [`${sid}|${tid}|${edge.relation}`, edge.birthTime];
+    })
+  );
+  const [graphData, stats] = await Promise.all([fetchGraph(), fetchStats()]);
+  buildGraphData(graphData);
+  const now = performance.now();
+  for (const node of nodes) {
+    const prev = prevPositions.get(node.id);
+    if (!prev) continue;
+    node.x = prev.x;
+    node.y = prev.y;
+    node.vx = prev.vx;
+    node.vy = prev.vy;
+    node.birthTime = prev.birthTime;
+    node.pulseTime = null;
+  }
+  for (const edge of edges) {
+    const sid = typeof edge.source === 'object' ? edge.source.id : edge.source;
+    const tid = typeof edge.target === 'object' ? edge.target.id : edge.target;
+    const key = `${sid}|${tid}|${edge.relation}`;
+    const prevBirth = prevEdgeBirthTimes.get(key);
+    if (prevBirth !== undefined) {
+      edge.birthTime = prevBirth;
+    } else {
+      edge.birthTime = now;
+    }
+  }
+
+  refreshSimulation(0.15);
+  setEmptyStateVisible(graphData.nodes.length === 0);
+  renderStats(stats);
+  connectSSE();
+}
+
+function setupTimeline() {
+  const bar = document.getElementById('timeline-bar');
+  const toggle = document.getElementById('timeline-toggle');
+  const slider = document.getElementById('timeline-slider');
+  const play = document.getElementById('timeline-play');
+  const speed = document.getElementById('timeline-speed');
+  const display = document.getElementById('timeline-display');
+  if (!bar || !toggle || !slider || !play || !speed) return;
+
+  bar.classList.add('active');
+
+  void fetchTimelineBounds().then((bounds) => {
+    if (!display) return;
+    if (!bounds || !bounds.count) {
+      display.textContent = '● Live';
+      return;
+    }
+    display.textContent = `● Live · ${bounds.count} events`;
+  }).catch(() => {
+    if (display) display.textContent = '● Live';
+  });
+
+  toggle.addEventListener('click', () => {
+    if (timelineMode) {
+      void exitTimelineMode();
+      return;
+    }
+    void enterTimelineMode();
+  });
+
+  slider.addEventListener('input', () => {
+    stopTimelinePlayback();
+    void scrubToStep(Number(slider.value));
+  });
+
+  play.addEventListener('click', () => {
+    if (timelinePlaying) {
+      stopTimelinePlayback();
+      return;
+    }
+    startTimelinePlayback();
+  });
+
+  speed.addEventListener('change', () => {
+    if (!timelinePlaying) return;
+    stopTimelinePlayback();
+    startTimelinePlayback();
+  });
+}
+
+// ---- Init ----
+
+async function init() {
+  setupCanvas();
+  setupCanvasInteraction();
+
+  window.addEventListener('resize', () => {
+    setupCanvas();
+    if (simulation) {
+      simulation.force('center', d3.forceCenter(width / 2, height / 2).strength(0.02));
+      simulation.alpha(Math.max(simulation.alpha(), 0.3)).restart();
+    }
+  });
+
+  const [graphData, stats] = await Promise.all([fetchGraph(), fetchStats()]);
+  renderStats(stats);
+
+  buildGraphData(graphData);
+  initSimulation();
+  setEmptyStateVisible(graphData.nodes.length === 0);
+
+  panX = 0;
+  panY = 0;
+  zoom = 1;
+
+  if (renderHandle) cancelAnimationFrame(renderHandle);
+  renderHandle = requestAnimationFrame(renderLoop);
+
+  setupSearch();
+  connectSSE();
+  setupTimeline();
+}
+
+init();
+</script>
+</body>
+</html>
